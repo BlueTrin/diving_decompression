@@ -7,7 +7,7 @@ import pandas as pd
 import math
 from prettytable import PrettyTable
 
-df = pd.DataFrame([
+ZHL_16C = pd.DataFrame([
     [1, 5.0, 1.1696, 0.5578, 1.88, 1.6189, 0.4770],
     [2, 8.0, 1.0000, 0.6514, 3.02, 1.3830, 0.5747],
     [3, 12.5, 0.8618, 0.7222, 4.72, 1.1919, 0.6527],
@@ -106,14 +106,14 @@ def get_partial_pressures(
     rate_change_n2_p = rate_depth * gas.n2_pc
 
     # Compute k(He)
-    kHe = math.log(2) / df['he_halflife']
+    kHe = math.log(2) / ZHL_16C['he_halflife']
 
     # P(He) = Pi,0(He) + R(HE) (t - 1/k(He)) - (Pi,0(He) - P0(He) - R(He)/k(He)) exp(-2 k(He))
     p_he = init_inspired_pp_he + rate_change_he_p * (t - 1 / kHe) \
            - (init_inspired_pp_he - tissues.he_p - rate_change_he_p / kHe) \
            * np.exp(-kHe * t)
 
-    kN2 = math.log(2) / df['n2_halflife']
+    kN2 = math.log(2) / ZHL_16C['n2_halflife']
     p_n2 = init_inspired_pp_n2 + rate_change_n2_p * (t - 1 / kN2) \
            - (init_inspired_pp_n2 - tissues.n2_p - rate_change_n2_p / kN2) \
            * np.exp(-kN2 * t)
@@ -123,8 +123,8 @@ def get_partial_pressures(
 
 def ceiling(
         tissues: Tissues) -> float:
-    a = (df['n2_a'] * tissues.n2_p + df['he_a'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
-    b = (df['n2_b'] * tissues.n2_p + df['he_b'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
+    a = (ZHL_16C['n2_a'] * tissues.n2_p + ZHL_16C['he_a'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
+    b = (ZHL_16C['n2_b'] * tissues.n2_p + ZHL_16C['he_b'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
     tissue_ceilings = ((tissues.n2_p + tissues.he_p) - a) * b
     return max(tissue_ceilings)
 
@@ -137,8 +137,80 @@ def pressure_to_depth(pressure):
     return (pressure - 1.0) * 10.0
 
 
+def round_depth_ceiling(raw_ceiling):
+    # rounds to the closest multiple of 3 except if it is between 0 and 6 then we round to 6
+    ceiling = math.ceil(raw_ceiling / 3) * 3
+    if 0 < ceiling <= 6:
+        return 6
+    else:
+        return ceiling
+
+
+def find_next_stop(tissues, depth, gas, ascent_rate):
+    # finds the next stop that does not go past the ceiling
+    depth_ceiling = pressure_to_depth(ceiling(tissues))
+    estimated_stop_depth = round_depth_ceiling(depth_ceiling)
+
+    if estimated_stop_depth < depth:
+        # we don't do fraction of minutes for planning
+        t = math.ceil((depth - estimated_stop_depth) / ascent_rate)
+
+        return [(t, estimated_stop_depth)]
+    else:
+        # then we compute how much time we have to wait at the current depth before to move
+        t_wait = 1
+        while True:
+            tissues_after_stop = get_partial_pressures(
+                tissues,
+                gas,
+                depth_to_pressure(depth),
+                depth_to_pressure(depth),
+                t_wait)
+
+            depth_ceiling = pressure_to_depth(ceiling(tissues_after_stop))
+            estimated_stop_depth = round_depth_ceiling(depth_ceiling)
+
+            if estimated_stop_depth < depth:
+                t_ascent = math.ceil((depth - estimated_stop_depth) / ascent_rate)
+                return [(t_wait, depth), (t_wait + t_ascent, estimated_stop_depth)]
+
+            t_wait += 1
+
+            if t_wait > 100:
+                raise RuntimeError("looks like we cannot ascend after 100 minutes of stop")
+
+
+def get_stops_to_surface(tissues, depth, gas, max_ascent_rate):
+    dive_plan = [(0, depth)]
+    curr_depth = depth
+    while curr_depth > 0:
+        stop_info = find_next_stop(tissues, curr_depth, gas, max_ascent_rate)
+
+        # update times
+        stop_info = [(t + dive_plan[-1][0], d) for (t, d) in stop_info]
+
+        if stop_info[-1][1] >= curr_depth:
+            raise RuntimeError("We didn't get a shallower stop")
+
+        # update tissues
+        stop_plan = [dive_plan[-1]] + stop_info
+
+        for (start_time, start_depth), (end_time, end_depth) in zip(stop_plan[:-1], stop_plan[1:]):
+            tissues = get_partial_pressures(
+                tissues,  # vector for compartments
+                gas,
+                depth_to_pressure(start_depth),  # for example 0 feet
+                depth_to_pressure(end_depth),  # for example 120 feet
+                end_time - start_time,  # time for depth change
+            )
+        dive_plan.extend(stop_info)
+
+        curr_depth = dive_plan[-1][1]
+    return dive_plan
+
+
 def main():
-    generate_ascii_table(df)
+    generate_ascii_table(ZHL_16C)
 
     descent_rate = 20  # 20m / min
     ascent_rate = 9  # 9m / min
@@ -153,7 +225,7 @@ def main():
     print("initial ceiling: {}".format(pressure_to_depth(ceiling(tissues))))
 
     i_step = 0
-    ((start_depth, start_time), (end_depth, end_time)) = list(zip(dive[:-1], dive[1:]))[i_step]
+    ((start_time, start_depth), (end_time, end_depth)) = list(zip(dive[:-1], dive[1:]))[i_step]
     tissues = get_partial_pressures(
         tissues,  # vector for compartments
         gas,

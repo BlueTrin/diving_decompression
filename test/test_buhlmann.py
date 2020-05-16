@@ -28,3 +28,30 @@ class TestBuhlmann(TestCase):
             6
         )
 
+    def test_dive_plan(self):
+        dive = [
+            (0, 0),
+            (2, 40),  # 40 meters at 2 mins
+            (22, 40),  # 40 meters at 22 mins
+        ]
+
+        tissues = buhlmann.Tissues()
+        gas = buhlmann.Gas(n2_pc=0.79, he_pc=0.0)
+
+        print("initial ceiling: {}".format(buhlmann.pressure_to_depth(buhlmann.ceiling(tissues))))
+        for i_step, ((start_time, start_depth), (end_time, end_depth)) in enumerate(zip(dive[:-1], dive[1:])):
+            print("Step:{}, t_start={}, depth_start={}, t_end={}, depth_end={}".format(
+                i_step, start_time, start_depth, end_time, end_depth
+            ))
+            tissues = buhlmann.get_partial_pressures(
+                tissues,  # vector for compartments
+                gas,
+                buhlmann.depth_to_pressure(start_depth),  # for example 0 feet
+                buhlmann.depth_to_pressure(end_depth),  # for example 120 feet
+                end_time - start_time,  # time for depth change
+            )
+            print("ceiling: {}".format(buhlmann.pressure_to_depth(buhlmann.ceiling(tissues))))
+
+        stops = buhlmann.get_stops_to_surface(tissues, end_depth, gas, 9)
+        pass
+
