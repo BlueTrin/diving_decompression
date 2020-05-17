@@ -124,6 +124,11 @@ def get_partial_pressures(
 
 def ceiling(
         tissues: Tissues) -> float:
+    """
+    Return the ceiling (in bar)
+    :param tissues:
+    :return:
+    """
     a = (ZHL_16C['n2_a'] * tissues.n2_p + ZHL_16C['he_a'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
     b = (ZHL_16C['n2_b'] * tissues.n2_p + ZHL_16C['he_b'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
     tissue_ceilings = ((tissues.n2_p + tissues.he_p) - a) * b
