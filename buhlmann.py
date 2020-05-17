@@ -2,6 +2,7 @@
 # File: test_buhlmann.py
 # Created by BlueTrin at 15-May-20
 
+import copy
 import numpy as np
 import pandas as pd
 import math
@@ -155,7 +156,11 @@ def find_next_stop(tissues, depth, gas, ascent_rate):
         # we don't do fraction of minutes for planning
         t = math.ceil((depth - estimated_stop_depth) / ascent_rate)
 
-        return [(t, estimated_stop_depth)]
+        return pd.DataFrame([
+            [0, depth],
+            [t, estimated_stop_depth]
+        ],
+            columns=['t', 'depth'])
     else:
         # then we compute how much time we have to wait at the current depth before to move
         t_wait = 1
@@ -172,7 +177,13 @@ def find_next_stop(tissues, depth, gas, ascent_rate):
 
             if estimated_stop_depth < depth:
                 t_ascent = math.ceil((depth - estimated_stop_depth) / ascent_rate)
-                return [(t_wait, depth), (t_wait + t_ascent, estimated_stop_depth)]
+                return pd.DataFrame([
+                    [0, depth],
+                    [t_wait, depth],
+                    [t_wait + t_ascent, estimated_stop_depth]
+                ],
+                    columns=['t', 'depth']
+                )
 
             t_wait += 1
 
@@ -181,65 +192,131 @@ def find_next_stop(tissues, depth, gas, ascent_rate):
 
 
 def get_stops_to_surface(tissues, depth, gas, max_ascent_rate):
-    dive_plan = [(0, depth)]
-    curr_depth = depth
-    while curr_depth > 0:
-        stop_info = find_next_stop(tissues, curr_depth, gas, max_ascent_rate)
+    dive_plan = pd.DataFrame([
+        [0, depth, tissues, pressure_to_depth(ceiling(tissues))],
+    ],
+        columns=['t', 'depth', 'tissues', 'ceiling'])
+
+    while True:
+        # update state variables
+        curr_depth = dive_plan.iloc[-1]['depth']
+        curr_tissues = dive_plan.iloc[-1]['tissues']
+        curr_time = dive_plan.iloc[-1]['t']
+
+        if curr_depth <= 0:
+            break
+
+        stop_info = find_next_stop(curr_tissues, curr_depth, gas, max_ascent_rate)
 
         # update times
-        stop_info = [(t + dive_plan[-1][0], d) for (t, d) in stop_info]
+        stop_info['t'] += curr_time
 
-        if stop_info[-1][1] >= curr_depth:
+        if stop_info.iloc[-1]['depth'] >= curr_depth:
             raise RuntimeError("We didn't get a shallower stop")
 
         # update tissues
-        stop_plan = [dive_plan[-1]] + stop_info
+        run_stop_schedule = run_dive(stop_info, curr_tissues, gas)
 
-        for (start_time, start_depth), (end_time, end_depth) in zip(stop_plan[:-1], stop_plan[1:]):
-            tissues = get_partial_pressures(
-                tissues,  # vector for compartments
-                gas,
-                depth_to_pressure(start_depth),  # for example 0 feet
-                depth_to_pressure(end_depth),  # for example 120 feet
-                end_time - start_time,  # time for depth change
-            )
-        dive_plan.extend(stop_info)
+        dive_plan = dive_plan.append(run_stop_schedule[1:])  # don't repeat the first entry
 
-        curr_depth = dive_plan[-1][1]
     return dive_plan
 
 
+def run_dive(dive_plan, initial_tissues, gas, resolution=None):
+    """
+    Run a dive and update the columns tissues and ceiling
+    :param dive_plan: can be either a dataframe with columns 't' for time in minutes and 'depth' for depth in metres
+    or can be a list of tuples (t, depth)
+    :param initial_tissues:
+    :param gas:
+    :param resolution: resolution in minutes, we will return information at this resolution, if left to None, then we u
+    only use the poinst of the dive plan
+    :return:
+    """
+
+    updated_dive_plan_lst = [
+        [dive_plan.iloc[0]['t'], dive_plan.iloc[0]['depth'], initial_tissues,
+         pressure_to_depth(ceiling(initial_tissues))]]
+
+    # tissues_lst = [initial_tissues]
+    # ceiling_lst = []
+    for start_idx, end_idx in zip(range(len(dive_plan)-1), range(1, len(dive_plan))):
+
+        start_depth = dive_plan.iloc[start_idx]['depth']
+        start_time = dive_plan.iloc[start_idx]['t']
+
+        end_depth = dive_plan.iloc[end_idx]['depth']
+        end_time = dive_plan.iloc[end_idx]['t']
+
+        if updated_dive_plan_lst[-1][1] != start_depth or updated_dive_plan_lst[-1][0] != start_time:
+            raise RuntimeError("sanity check, we should start every iteration with the last row matching the start")
+
+        start_tissues = updated_dive_plan_lst[-1][2]
+        if resolution:
+            step_time = start_time + resolution
+        else:
+            step_time = end_time
+
+        while True:
+            if step_time >= end_time:
+                step_time = end_time
+                step_depth = end_depth
+            else:
+                step_depth = start_depth + (end_depth - start_depth) / (end_time - start_time) * (
+                        step_time - start_time)
+
+            step_tissues = get_partial_pressures(
+                start_tissues,
+                gas,
+                depth_to_pressure(start_depth),  # for example 0 feet
+                depth_to_pressure(step_depth),  # for example 120 feet
+                step_time - start_time,  # time for depth change
+            )
+            updated_dive_plan_lst.append(
+                [step_time, step_depth, step_tissues, pressure_to_depth(ceiling(step_tissues))]
+            )
+
+            if step_time == end_time or not resolution:
+                break
+
+            step_time += resolution
+
+    updated_dive_plan = pd.DataFrame(updated_dive_plan_lst, columns=['t', 'depth', 'tissues', 'ceiling'])
+    return updated_dive_plan
+
+
 def main():
-    generate_ascii_table(ZHL_16C)
-
-    descent_rate = 20  # 20m / min
-    ascent_rate = 9  # 9m / min
-    gas = Gas(n2_pc=0.4, he_pc=0.45)
-
-    dive = [
-        (0, 0),
-        (40, 2),  # 40 meters at 2 mins
-        (40, 22),  # 40 meters at 22 mins
-    ]
-    tissues = Tissues()
-    print("initial ceiling: {}".format(pressure_to_depth(ceiling(tissues))))
-
-    i_step = 0
-    ((start_time, start_depth), (end_time, end_depth)) = list(zip(dive[:-1], dive[1:]))[i_step]
-    tissues = get_partial_pressures(
-        tissues,  # vector for compartments
-        gas,
-        depth_to_pressure(start_depth),  # for example 0 feet
-        depth_to_pressure(end_depth),  # for example 120 feet
-        end_time - start_time,  # time for depth change
-    )
-    print("N2tissues: {}".format(tissues.n2_p))
-    print("ceiling: {}".format(pressure_to_depth(ceiling(tissues))))
+    pass
+    # generate_ascii_table(ZHL_16C)
+    #
+    # descent_rate = 20  # 20m / min
+    # ascent_rate = 9  # 9m / min
+    # gas = Gas(n2_pc=0.4, he_pc=0.45)
+    #
+    # dive = [
+    #     (0, 0),
+    #     (40, 2),  # 40 meters at 2 mins
+    #     (40, 22),  # 40 meters at 22 mins
+    # ]
+    # tissues = Tissues()
+    # print("initial ceiling: {}".format(pressure_to_depth(ceiling(tissues))))
+    #
+    # i_step = 0
+    # ((start_time, start_depth), (end_time, end_depth)) = list(zip(dive[:-1], dive[1:]))[i_step]
     # tissues = get_partial_pressures(
-    #         tissues,  # vector for compartments
-    #         gas,
-    #         end_depth,    # for example 0 feet
-    #         end_depth,      # for example 120 feet
-    #         20,              # time for depth change
+    #     tissues,  # vector for compartments
+    #     gas,
+    #     depth_to_pressure(start_depth),  # for example 0 feet
+    #     depth_to_pressure(end_depth),  # for example 120 feet
+    #     end_time - start_time,  # time for depth change
     # )
-    # print("ceiling: {}".format(ceiling(tissues)))
+    # print("N2tissues: {}".format(tissues.n2_p))
+    # print("ceiling: {}".format(pressure_to_depth(ceiling(tissues))))
+    # # tissues = get_partial_pressures(
+    # #         tissues,  # vector for compartments
+    # #         gas,
+    # #         end_depth,    # for example 0 feet
+    # #         end_depth,      # for example 120 feet
+    # #         20,              # time for depth change
+    # # )
+    # # print("ceiling: {}".format(ceiling(tissues)))

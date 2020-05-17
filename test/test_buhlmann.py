@@ -7,6 +7,7 @@ from unittest import TestCase
 import buhlmann
 import numpy.testing as npt
 import math
+import pandas as pd
 
 
 class TestBuhlmann(TestCase):
@@ -29,29 +30,32 @@ class TestBuhlmann(TestCase):
         )
 
     def test_dive_plan(self):
-        dive = [
-            (0, 0),
-            (2, 40),  # 40 meters at 2 mins
-            (22, 40),  # 40 meters at 22 mins
-        ]
-
-        tissues = buhlmann.Tissues()
         gas = buhlmann.Gas(n2_pc=0.79, he_pc=0.0)
+        initial_tissues = buhlmann.Tissues()
+        dive_plan = pd.DataFrame([
+            [0, 0],
+            [2, 40],
+            [22, 40]],
+            columns=['t', 'depth'])
+        run_dive_plan = buhlmann.run_dive(dive_plan, initial_tissues, gas)
+        current_tissues = run_dive_plan.iloc[-1]['tissues']
+        current_depth = run_dive_plan.iloc[-1]['depth']
+        max_ascent_rate = 9  # metres/sec
+        run_stops = buhlmann.get_stops_to_surface(current_tissues, current_depth, gas, max_ascent_rate)
+        run_stops['t'] += run_dive_plan.iloc[-1]['t']
+        run_dive_plan = run_dive_plan.append(run_stops.iloc[1:])
+        run_dive_plan.reset_index(inplace=True, drop=True)
+        # get data resolution at 1 minute
+        dive_data = buhlmann.run_dive(run_dive_plan, initial_tissues, gas, resolution=1)
 
-        print("initial ceiling: {}".format(buhlmann.pressure_to_depth(buhlmann.ceiling(tissues))))
-        for i_step, ((start_time, start_depth), (end_time, end_depth)) in enumerate(zip(dive[:-1], dive[1:])):
-            print("Step:{}, t_start={}, depth_start={}, t_end={}, depth_end={}".format(
-                i_step, start_time, start_depth, end_time, end_depth
-            ))
-            tissues = buhlmann.get_partial_pressures(
-                tissues,  # vector for compartments
-                gas,
-                buhlmann.depth_to_pressure(start_depth),  # for example 0 feet
-                buhlmann.depth_to_pressure(end_depth),  # for example 120 feet
-                end_time - start_time,  # time for depth change
-            )
-            print("ceiling: {}".format(buhlmann.pressure_to_depth(buhlmann.ceiling(tissues))))
-
-        stops = buhlmann.get_stops_to_surface(tissues, end_depth, gas, 9)
-        pass
-
+        # check that we have all times in minutes
+        self.assertTrue(
+            dive_data.iloc[-1]['t'] > dive_plan.iloc[-1]['t'],
+        )
+        # check that every time is there
+        self.assertEqual(
+            list(dive_data['t']),
+            list(range(len(dive_data)))
+        )
+        # check that we surfaced
+        self.assertEqual(dive_data.iloc[-1]['depth'], 0)
