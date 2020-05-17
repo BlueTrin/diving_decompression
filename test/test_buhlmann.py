@@ -82,3 +82,31 @@ class TestBuhlmann(TestCase):
             print("GF={}, ceiling={}".format(
                 gf_pc / 100.0,
                 buhlmann.pressure_to_depth(buhlmann.ceiling_pressure(last_tissues, gf=gf_pc / 100.0))))
+
+    def test_gradient_factors_stops(self):
+        gas = buhlmann.Gas(n2_pc=0.79, he_pc=0.0)
+        initial_tissues = buhlmann.Tissues()
+        dive_plan = pd.DataFrame([
+            [0, 0],
+            [2, 40],
+            [22, 40]],
+            columns=['t', 'depth'])
+        run_dive_plan = buhlmann.run_dive(dive_plan, initial_tissues, gas)
+        current_tissues = run_dive_plan.iloc[-1]['tissues']
+        current_depth = run_dive_plan.iloc[-1]['depth']
+        max_ascent_rate = 9  # metres/sec
+        run_stops = buhlmann.get_stops_to_surface(
+            current_tissues,
+            current_depth,
+            gas,
+            max_ascent_rate,
+
+            gf_lo=0.3,
+            gf_hi=0.8,
+        )
+        run_stops['t'] += run_dive_plan.iloc[-1]['t']
+        run_dive_plan = run_dive_plan.append(run_stops)
+
+        # print(run_dive_plan)
+        dive_data = buhlmann.run_dive(run_dive_plan, initial_tissues, gas, resolution=1)
+        # print(dive_data)

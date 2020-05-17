@@ -217,8 +217,8 @@ def find_next_stop(tissues: Tissues, depth: float, gas: Gas, ascent_rate: float,
 
             t_wait += 1
 
-            if t_wait > 10000:
-                raise RuntimeError("looks like we cannot ascend after 10000 minutes of stop")
+            if t_wait > 1000:
+                raise RuntimeError("looks like we cannot ascend after 1000 minutes of stop")
 
 
 def get_stops_to_surface(tissues, depth, gas, max_ascent_rate, gf_lo=1.0, gf_hi=1.0):
@@ -253,7 +253,12 @@ def get_stops_to_surface(tissues, depth, gas, max_ascent_rate, gf_lo=1.0, gf_hi=
 
             first_stop = False
         else:
-            stop_info = find_next_stop(curr_tissues, curr_depth, gas, max_ascent_rate, gf=gf.gf(curr_depth))
+            curr_gf = gf.gf(depth_to_pressure(curr_depth))
+            if not gf_lo <= curr_gf <= gf_hi:
+                raise RuntimeError("GF out of boundaries")
+
+            stop_info = find_next_stop(curr_tissues, curr_depth, gas, max_ascent_rate,
+                                       gf=curr_gf)
 
         # update times
         stop_info['t'] += curr_time
