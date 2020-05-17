@@ -25,7 +25,7 @@ class TestBuhlmann(TestCase):
         new_tissue = buhlmann.get_partial_pressures(tissue, gas, buhlmann.depth_to_pressure(40),
                                                     buhlmann.depth_to_pressure(40), 20)
         self.assertEqual(
-            math.ceil(buhlmann.pressure_to_depth(buhlmann.ceiling(new_tissue))),
+            math.ceil(buhlmann.pressure_to_depth(buhlmann.ceiling_pressure(new_tissue))),
             6
         )
 
@@ -66,7 +66,7 @@ class TestBuhlmann(TestCase):
         for gf_pc in list(range(0, 110, 10)):
             print("GF={}, ceiling={}".format(
                 gf_pc / 100.0,
-                buhlmann.pressure_to_depth(buhlmann.ceiling(initial_tissues, gf=gf_pc / 100.0))))
+                buhlmann.pressure_to_depth(buhlmann.ceiling_pressure(initial_tissues, gf=gf_pc / 100.0))))
 
         gas = buhlmann.Gas(n2_pc=0.79, he_pc=0.0)
         initial_tissues = buhlmann.Tissues()
@@ -81,4 +81,4 @@ class TestBuhlmann(TestCase):
         for gf_pc in list(range(0, 110, 10)):
             print("GF={}, ceiling={}".format(
                 gf_pc / 100.0,
-                buhlmann.pressure_to_depth(buhlmann.ceiling(last_tissues, gf=gf_pc / 100.0))))
+                buhlmann.pressure_to_depth(buhlmann.ceiling_pressure(last_tissues, gf=gf_pc / 100.0))))
