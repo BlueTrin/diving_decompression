@@ -123,15 +123,18 @@ def get_partial_pressures(
 
 
 def ceiling(
-        tissues: Tissues) -> float:
+        tissues: Tissues,
+        gf=1.0
+) -> float:
     """
     Return the ceiling (in bar)
     :param tissues:
+    :param gf: gradient factor
     :return:
     """
     a = (ZHL_16C['n2_a'] * tissues.n2_p + ZHL_16C['he_a'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
     b = (ZHL_16C['n2_b'] * tissues.n2_p + ZHL_16C['he_b'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
-    tissue_ceilings = ((tissues.n2_p + tissues.he_p) - a) * b
+    tissue_ceilings = ((tissues.n2_p + tissues.he_p) - gf * a) / (gf / b - gf + 1.0)
     return max(tissue_ceilings)
 
 
@@ -245,7 +248,7 @@ def run_dive(dive_plan, initial_tissues, gas, resolution=None):
 
     # tissues_lst = [initial_tissues]
     # ceiling_lst = []
-    for start_idx, end_idx in zip(range(len(dive_plan)-1), range(1, len(dive_plan))):
+    for start_idx, end_idx in zip(range(len(dive_plan) - 1), range(1, len(dive_plan))):
 
         start_depth = dive_plan.iloc[start_idx]['depth']
         start_time = dive_plan.iloc[start_idx]['t']

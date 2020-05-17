@@ -59,3 +59,26 @@ class TestBuhlmann(TestCase):
         )
         # check that we surfaced
         self.assertEqual(dive_data.iloc[-1]['depth'], 0)
+
+    def test_gradient_factors(self):
+        initial_tissues = buhlmann.Tissues()
+
+        for gf_pc in list(range(0, 110, 10)):
+            print("GF={}, ceiling={}".format(
+                gf_pc / 100.0,
+                buhlmann.pressure_to_depth(buhlmann.ceiling(initial_tissues, gf=gf_pc / 100.0))))
+
+        gas = buhlmann.Gas(n2_pc=0.79, he_pc=0.0)
+        initial_tissues = buhlmann.Tissues()
+        dive_plan = pd.DataFrame([
+            [0, 0],
+            [2, 40],
+            [22, 40]],
+            columns=['t', 'depth'])
+        run_dive_plan = buhlmann.run_dive(dive_plan, initial_tissues, gas)
+
+        last_tissues = run_dive_plan.iloc[-1]['tissues']
+        for gf_pc in list(range(0, 110, 10)):
+            print("GF={}, ceiling={}".format(
+                gf_pc / 100.0,
+                buhlmann.pressure_to_depth(buhlmann.ceiling(last_tissues, gf=gf_pc / 100.0))))
