@@ -91,6 +91,8 @@ class TestBuhlmann(TestCase):
             [2, 40],
             [22, 40]],
             columns=['t', 'depth'])
+        gf_lo = 0.3
+        gf_hi = 0.8
         run_dive_plan = buhlmann.run_dive(dive_plan, initial_tissues, gas)
         current_tissues = run_dive_plan.iloc[-1]['tissues']
         current_depth = run_dive_plan.iloc[-1]['depth']
@@ -101,12 +103,28 @@ class TestBuhlmann(TestCase):
             gas,
             max_ascent_rate,
 
-            gf_lo=0.3,
-            gf_hi=0.8,
+            gf_lo=gf_lo,
+            gf_hi=gf_hi,
         )
-        run_stops['t'] += run_dive_plan.iloc[-1]['t']
+        self.assertTrue(
+            run_stops['gf'].between(gf_lo, gf_hi).all(),
+            "All GF values should be between gf_lo={} and gf_hi={}".format(gf_lo, gf_hi)
+        )
+        depth_first_stop = run_dive_plan.iloc[-1]['depth']
+        t_first_stop = run_dive_plan.iloc[-1]['t']
+        run_stops['t'] += t_first_stop
         run_dive_plan = run_dive_plan.append(run_stops)
 
         # print(run_dive_plan)
-        dive_data = buhlmann.run_dive(run_dive_plan, initial_tissues, gas, resolution=1)
-        # print(dive_data)
+        dive_data = buhlmann.run_dive(
+            run_dive_plan,
+            initial_tissues,
+            gas,
+            resolution=1,
+            gf=buhlmann.GradientFactors(
+                gf_lo,
+                buhlmann.depth_to_pressure(depth_first_stop),
+                gf_hi,
+                buhlmann.depth_to_pressure(0),
+                t_first_stop))
+

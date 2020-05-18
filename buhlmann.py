@@ -3,6 +3,7 @@
 # Created by BlueTrin at 15-May-20
 
 import copy
+import numbers
 import numpy as np
 import pandas as pd
 import math
@@ -33,7 +34,7 @@ ZHL_16C = pd.DataFrame([
 
 
 class GradientFactors:
-    def __init__(self, gf_lo, pamb_lo, gf_hi, pamb_hi=1):
+    def __init__(self, gf_lo, pamb_lo, gf_hi, pamb_hi=1, t_first_stop=None):
         """
         :param gf_lo: gradient factor for first stop, usually between 0 and 1
         :param pamb_lo: ambiant pressure for the first stop
@@ -44,11 +45,15 @@ class GradientFactors:
         self.pamb_lo = pamb_lo
         self.gf_hi = gf_hi
         self.pamb_hi = pamb_hi
+        self.t_first_stop = t_first_stop
 
-    def gf(self, pamb):
-        return self.gf_lo + \
-               (self.gf_hi - self.gf_lo) / (self.pamb_hi - self.pamb_lo) \
-               * (pamb - self.pamb_lo)
+    def gf(self, pamb, t=None):
+        if t is not None and self.t_first_stop is not None and t <= self.t_first_stop:
+            return self.gf_lo
+        else:
+            return self.gf_lo + \
+                   (self.gf_hi - self.gf_lo) / (self.pamb_hi - self.pamb_lo) \
+                   * (pamb - self.pamb_lo)
 
 
 def generate_ascii_table(df):
@@ -116,7 +121,9 @@ def get_partial_pressures(
     :param start_pressure:
     :param end_pressure:
     """
-    if t:
+    if t and t < 0:
+        raise RuntimeError("Negative time")
+    elif t:
         rate_depth = (end_pressure - start_pressure) / t
     else:
         rate_depth = 0
@@ -144,6 +151,22 @@ def get_partial_pressures(
     return Tissues(n2_p=p_n2, he_p=p_he)
 
 
+def ceiling_pressure_by_tissue(
+        tissues: Tissues,
+        gf=1.0
+) -> pd.DataFrame:
+    """
+    Return the ceiling (in bar)
+    :param tissues:
+    :param gf: gradient factor
+    :return:
+    """
+    a = (ZHL_16C['n2_a'] * tissues.n2_p + ZHL_16C['he_a'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
+    b = (ZHL_16C['n2_b'] * tissues.n2_p + ZHL_16C['he_b'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
+    tissue_ceilings = ((tissues.n2_p + tissues.he_p) - gf * a) / (gf / b - gf + 1.0)
+    return tissue_ceilings
+
+
 def ceiling_pressure(
         tissues: Tissues,
         gf=1.0
@@ -154,10 +177,7 @@ def ceiling_pressure(
     :param gf: gradient factor
     :return:
     """
-    a = (ZHL_16C['n2_a'] * tissues.n2_p + ZHL_16C['he_a'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
-    b = (ZHL_16C['n2_b'] * tissues.n2_p + ZHL_16C['he_b'] * tissues.he_p) / (tissues.n2_p + tissues.he_p)
-    tissue_ceilings = ((tissues.n2_p + tissues.he_p) - gf * a) / (gf / b - gf + 1.0)
-    return max(tissue_ceilings)
+    return max(ceiling_pressure_by_tissue(tissues, gf))
 
 
 def depth_to_pressure(depth):
@@ -177,14 +197,50 @@ def round_depth_ceiling(raw_ceiling):
         return ceiling
 
 
-def find_next_stop(tissues: Tissues, depth: float, gas: Gas, ascent_rate: float, gf: float = 1.0) -> pd.DataFrame:
+def try_stop(tissues: Tissues, depth_start: float, depth_end: float, gas: Gas, max_ascent_rate: float, gf) -> bool:
+    # test if you can attempt this stop
+    # - returns True if not violated ceiling
+    # - returns False otherwise
+    t_ascent = math.ceil((depth_start - depth_end) / max_ascent_rate)
+    tissues_after_ascent = get_partial_pressures(
+        tissues,
+        gas,
+        depth_to_pressure(depth_start),
+        depth_to_pressure(depth_end),
+        t_ascent)
+
+    return pressure_to_depth(
+        ceiling_pressure(tissues_after_ascent, gf=gf.gf(depth_to_pressure(depth_end)))) <= depth_end
+
+
+def next_depth_stop(stop_depth):
+    estimated_stop_depth = round_depth_ceiling(stop_depth)
+    if estimated_stop_depth == 0:
+        raise RuntimeError("Already at 0metres, cannot find shallower next stop")
+    elif estimated_stop_depth <= 6:
+        return 0
+    else:
+        return estimated_stop_depth - 3
+
+
+def find_next_stop(tissues: Tissues, depth: float, gas: Gas, max_ascent_rate: float, gf=None) -> pd.DataFrame:
+    if gf is None:
+        # default to GF=1
+        gf = GradientFactors(1, 10, 1, 0)
+    elif isinstance(gf, numbers.Number):
+        gf = GradientFactors(gf, 10, gf, 0)
+
     # finds the next stop that does not go past the ceiling
-    depth_ceiling = pressure_to_depth(ceiling_pressure(tissues, gf))
+    depth_ceiling = pressure_to_depth(ceiling_pressure(tissues, gf.gf(depth)))
     estimated_stop_depth = round_depth_ceiling(depth_ceiling)
+    if estimated_stop_depth != 0 and try_stop(tissues, depth, next_depth_stop(estimated_stop_depth), gas,
+                                              max_ascent_rate, gf):
+        # the off gas during the ascent allowed to use the next stop
+        estimated_stop_depth = next_depth_stop(estimated_stop_depth)
 
     if estimated_stop_depth < depth:
         # we don't do fraction of minutes for planning
-        t = math.ceil((depth - estimated_stop_depth) / ascent_rate)
+        t = math.ceil((depth - estimated_stop_depth) / max_ascent_rate)
 
         return pd.DataFrame([
             [0, depth],
@@ -202,11 +258,17 @@ def find_next_stop(tissues: Tissues, depth: float, gas: Gas, ascent_rate: float,
                 depth_to_pressure(depth),
                 t_wait)
 
-            depth_ceiling = pressure_to_depth(ceiling_pressure(tissues_after_stop, gf))
+            depth_ceiling = pressure_to_depth(ceiling_pressure(tissues_after_stop, gf.gf(depth)))
             estimated_stop_depth = round_depth_ceiling(depth_ceiling)
 
+            if estimated_stop_depth != 0 and try_stop(tissues_after_stop, depth, next_depth_stop(estimated_stop_depth),
+                                                      gas,
+                                                      max_ascent_rate, gf):
+                # the off gas during the ascent allowed to use the next stop
+                estimated_stop_depth = next_depth_stop(estimated_stop_depth)
+
             if estimated_stop_depth < depth:
-                t_ascent = math.ceil((depth - estimated_stop_depth) / ascent_rate)
+                t_ascent = math.ceil((depth - estimated_stop_depth) / max_ascent_rate)
                 return pd.DataFrame([
                     [0, depth],
                     [t_wait, depth],
@@ -223,9 +285,9 @@ def find_next_stop(tissues: Tissues, depth: float, gas: Gas, ascent_rate: float,
 
 def get_stops_to_surface(tissues, depth, gas, max_ascent_rate, gf_lo=1.0, gf_hi=1.0):
     dive_plan = pd.DataFrame([
-        [0, depth, tissues, pressure_to_depth(ceiling_pressure(tissues))],
+        [0, depth, tissues, pressure_to_depth(ceiling_pressure(tissues)), gf_lo],
     ],
-        columns=['t', 'depth', 'tissues', 'ceiling'])
+        columns=['t', 'depth', 'tissues', 'ceiling', 'gf'])
 
     first_stop = True
     gf = None
@@ -249,7 +311,7 @@ def get_stops_to_surface(tissues, depth, gas, max_ascent_rate, gf_lo=1.0, gf_hi=
                 # there is only one stop
                 gf = GradientFactors(gf_hi, 120, gf_hi, depth_to_pressure(6))
             else:
-                gf = GradientFactors(gf_lo, depth_to_pressure(stop_info.iloc[-1]['depth']), gf_hi, depth_to_pressure(6))
+                gf = GradientFactors(gf_lo, depth_to_pressure(stop_info.iloc[-1]['depth']), gf_hi, depth_to_pressure(0))
 
             first_stop = False
         else:
@@ -268,13 +330,18 @@ def get_stops_to_surface(tissues, depth, gas, max_ascent_rate, gf_lo=1.0, gf_hi=
 
         # update tissues
         run_stop_schedule = run_dive(stop_info, curr_tissues, gas)
-
+        run_stop_schedule['gf'] = gf.gf(depth_to_pressure(run_stop_schedule['depth']))
         dive_plan = dive_plan.append(run_stop_schedule[1:])  # don't repeat the first entry
 
     return dive_plan
 
 
-def run_dive(dive_plan, initial_tissues, gas, resolution=None, gf=None):
+def run_dive(
+        dive_plan,
+        initial_tissues,
+        gas,
+        resolution=None,
+        gf=None):
     """
     Run a dive and update the columns tissues and ceiling
     :param dive_plan: can be either a dataframe with columns 't' for time in minutes and 'depth' for depth in metres
@@ -285,10 +352,18 @@ def run_dive(dive_plan, initial_tissues, gas, resolution=None, gf=None):
     only use the poinst of the dive plan
     :return:
     """
+    if gf is None:
+        gf = GradientFactors(1.0, depth_to_pressure(120), 1.0, depth_to_pressure(0), 0)
 
+    init_pt = dive_plan.iloc[0]
+    init_gf = gf.gf(depth_to_pressure(init_pt['depth']))
     updated_dive_plan_lst = [
-        [dive_plan.iloc[0]['t'], dive_plan.iloc[0]['depth'], initial_tissues,
-         pressure_to_depth(ceiling_pressure(initial_tissues))]]
+        [init_pt['t'],
+         init_pt['depth'],
+         initial_tissues,
+         pressure_to_depth(ceiling_pressure(initial_tissues, init_gf)),
+         init_gf,
+         ]]
 
     # tissues_lst = [initial_tissues]
     # ceiling_lst = []
@@ -324,8 +399,14 @@ def run_dive(dive_plan, initial_tissues, gas, resolution=None, gf=None):
                 depth_to_pressure(step_depth),  # for example 120 feet
                 step_time - start_time,  # time for depth change
             )
+            step_gf = gf.gf(depth_to_pressure(step_depth), step_time)
             updated_dive_plan_lst.append(
-                [step_time, step_depth, step_tissues, pressure_to_depth(ceiling_pressure(step_tissues))]
+                [step_time,
+                 step_depth,
+                 step_tissues,
+                 pressure_to_depth(ceiling_pressure(step_tissues, step_gf)),
+                 step_gf
+                 ]
             )
 
             if step_time == end_time or not resolution:
@@ -333,7 +414,7 @@ def run_dive(dive_plan, initial_tissues, gas, resolution=None, gf=None):
 
             step_time += resolution
 
-    updated_dive_plan = pd.DataFrame(updated_dive_plan_lst, columns=['t', 'depth', 'tissues', 'ceiling'])
+    updated_dive_plan = pd.DataFrame(updated_dive_plan_lst, columns=['t', 'depth', 'tissues', 'ceiling', 'gf'])
     return updated_dive_plan
 
 
